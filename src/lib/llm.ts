@@ -10,27 +10,58 @@ export interface MandalartData {
 
 const SYSTEM_PROMPT = `
 You are a Mandalart planning expert.
-Analyze the user's answers to create a year-plan JSON.
+The user will provide answers to reflection questions.
+Your goal is to build a complete 9x9 Mandalart chart (Center + 8 Areas * 8 SubGoals).
 
-Output format must be strictly JSON:
+[Process]
+1. **Analyze**: Read user answers to understand their core values and desires.
+2. **Summarize**: Create one specific "Central Keyword" (Sentence) that defines their next year.
+3. **Structure**: Derive 8 "Key Areas" (titles) to achieve that Central Keyword.
+4. **Detail**: For EACH Key Area, generate exactly **8 Actionable Sub-goals**.
+
+[CRITICAL RULES]
+- **NEVER leave a sub-goal empty**. You MUST generate 8 items for every area.
+- If the user's answer is short, **creatively expand** based on the context to fill all 8 slots.
+- Sub-goals must be concrete actions (e.g., "Write 1 blog post", "Drink 2L water").
+- Language: **Korean** (Hangul).
+- Output: VALID JSON only.
+
+[JSON Structure]
 {
-  "centralKeyword": "One sentence summarizing the user's year and aspiration",
+  "centralKeyword": "...",
   "keyAreas": [
     {
-      "title": "Area Title",
-      "subGoals": ["Goal 1", "Goal 2", "...", "Goal 8"]
-    }
+      "title": "Area 1",
+      "subGoals": ["Action 1", "Action 2", ..., "Action 8"]
+    },
+    ... (Total 8 Areas)
   ]
 }
-
-Constraints:
-- "keyAreas" must have exactly 8 items.
-- "subGoals" must have exactly 8 items.
-- Language: Korean (Answers should be in Korean).
-- Return ONLY JSON. No markdown.
 `;
 
-export async function generateMandalart(answers: string[], model: string = "llama3"): Promise<MandalartData> {
+
+function extractJson(text: string): string {
+    // 1. Try to find JSON block bounded by ```json ... ```
+    const markdownMatch = text.match(/```json\n([\s\S]*?)\n```/);
+    if (markdownMatch && markdownMatch[1]) {
+        return markdownMatch[1];
+    }
+
+    // 2. Try to find the *first* raw object {...}
+    // We use a non-greedy match for the content to find the smallest valid object if possible, 
+    // but JSON nesting makes regex hard. 
+    // Reliable trick: Find the first '{' and the last '}'.
+    const firstOpen = text.indexOf('{');
+    const lastClose = text.lastIndexOf('}');
+
+    if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+        return text.substring(firstOpen, lastClose + 1);
+    }
+
+    return text;
+}
+
+export async function generateMandalart(answers: string[], model: string = "gpt-oss:20b"): Promise<MandalartData> {
     // Format answers for the prompt
     const answersText = answers.map((ans, idx) => `Q${idx + 1}. ${questions[idx].text}\nA: ${ans}`).join("\n\n");
 
@@ -46,7 +77,11 @@ export async function generateMandalart(answers: string[], model: string = "llam
                 model: model,
                 prompt: prompt,
                 stream: false,
-                format: "json", // Enforce JSON mode if supported by the model/ollama version
+                format: "json", // Enforce JSON mode again, it's safer if we don't try to complete
+                options: {
+                    temperature: 0.7,
+                    num_ctx: 4096,
+                },
             }),
         });
 
@@ -56,14 +91,36 @@ export async function generateMandalart(answers: string[], model: string = "llam
 
         const data = await response.json();
         const resultText = data.response;
+        console.log("Raw LLM Output:", resultText);
 
         // Parse JSON
         try {
-            const parsed = JSON.parse(resultText);
+            let cleanJson = extractJson(resultText);
+
+            // Sanitize: sometimes models put newlines inside strings which breaks JSON.parse
+            // A simple fix is hard without a parser, but let's try basic cleanup if needed.
+            // For now, rely on 'formatting: json' doing its job mostly.
+
+            const parsed = JSON.parse(cleanJson);
+
             // Validate structure roughly
-            if (!parsed.centralKeyword || !parsed.keyAreas || parsed.keyAreas.length !== 8) {
-                throw new Error("Invalid structure returned from LLM");
+            if (!parsed.keyAreas || parsed.keyAreas.length !== 8) {
+                console.warn("Struct validation failed. Items:", parsed.keyAreas?.length);
+                // We could throw, or maybe we just pad the array?
+                // Let's pad it to avoiding crashing the UI
+                if (!parsed.keyAreas) parsed.keyAreas = [];
+                while (parsed.keyAreas.length < 8) {
+                    parsed.keyAreas.push({ title: "빈 영역", subGoals: Array(8).fill("") });
+                }
             }
+            // Validate subgoals
+            parsed.keyAreas.forEach((area: any) => {
+                if (!area.subGoals) area.subGoals = [];
+                while (area.subGoals.length < 8) {
+                    area.subGoals.push("");
+                }
+            });
+
             return parsed;
         } catch (e) {
             console.error("JSON Parse Error:", e, "Raw Text:", resultText);
