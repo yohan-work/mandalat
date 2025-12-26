@@ -8,16 +8,22 @@ import { getPreFilledGrid } from "@/data/userData";
 interface MandalartGridProps {
     initialAnswers: string[];
     onReset: () => void;
+    overrideGrid?: GridState;
 }
 
 type GridState = string[][]; // 9 blocks, each has 9 cells.
 
 const initialGrid = getPreFilledGrid();
 
-export function MandalartGrid({ initialAnswers, onReset }: MandalartGridProps) {
+export function MandalartGrid({ initialAnswers, onReset, overrideGrid }: MandalartGridProps) {
     const [grid, setGrid] = useState<GridState>(initialGrid);
 
     useEffect(() => {
+        if (overrideGrid) {
+            setGrid(overrideGrid);
+            return;
+        }
+
         // If initialAnswers are provided (from Question Flow), use them to override or fill.
         // But in this specific user scenario, we want to prioritize the pre-filled data 
         // if initialAnswers is empty or just generic.
@@ -39,7 +45,7 @@ export function MandalartGrid({ initialAnswers, onReset }: MandalartGridProps) {
             // Use Default Pre-filled if reset or empty
             setGrid(getPreFilledGrid());
         }
-    }, [initialAnswers]);
+    }, [initialAnswers, overrideGrid]);
 
     const handleCellChange = (blockIndex: number, cellIndex: number, value: string) => {
         const newGrid = [...grid];
